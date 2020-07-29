@@ -1,0 +1,15 @@
+a=212;
+b=345;
+c=123;
+d=0;
+if (a<b)
+    if (a<c)
+        d=a;
+    else
+        d = c;
+else
+    if (b < c)
+        d = b;
+    else
+        d = c;
+return d;
