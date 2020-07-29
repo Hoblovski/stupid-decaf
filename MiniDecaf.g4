@@ -36,9 +36,15 @@ lhs
     : Ident
     ;
 
+stmtLabeled
+    : stmt
+    ;
+
 stmt
     : lhs '=' rel ';'   # Asgn
     | 'return' expr ';' # Ret
+    | 'if' '(' expr ')' th=stmtLabeled ('else' el=stmtLabeled)? # If
+    | '{' stmt '}' # Block
     ;
 
 top

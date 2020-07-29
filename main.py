@@ -2,7 +2,7 @@ import sys
 from antlr4 import *
 from generated.MiniDecafLexer import MiniDecafLexer
 from generated.MiniDecafParser import MiniDecafParser
-from generated.MiniDecafListener import MiniDecafListener
+from generated.MiniDecafVisitor import MiniDecafVisitor
 
 def text(x):
     if x is not None:
@@ -25,11 +25,16 @@ class AsmEmitter:
         if self._f is not sys.stdout:
             self._f.close()
 
-
-class RISCVAsmGen(MiniDecafListener):
+class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
         self._E = emitter
         self.offsets = {}
+        self.nlabels = 0
+
+    def createLabel(self):
+        x = f"_L{self.nlabels}"
+        self.nlabels += 1
+        return x
 
     def push(self, x):
         if type(x) is str:
@@ -105,52 +110,82 @@ f"""# load {var}
 \taddi sp, sp, -8
 \tsd t0, 0(sp)""")
 
-    def exitAtomInteger(self, ctx:MiniDecafParser.AtomIntegerContext):
+
+    def visitAtomInteger(self, ctx:MiniDecafParser.AtomIntegerContext):
         self.push(text(ctx))
 
-    def exitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
+    def visitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
         if text(ctx) not in self.offsets:
             raise Exception(f"{text(ctx)} used before define")
         self.load(text(ctx))
 
-    def exitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
+    def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
+        self.visitChildren(ctx)
         self.unary(text(ctx.unaryOp()))
 
-    def exitCAdd(self, ctx:MiniDecafParser.AddContext):
+    def visitCAdd(self, ctx:MiniDecafParser.AddContext):
+        self.visitChildren(ctx)
         self.binary(text(ctx.addOp()))
 
-    def exitCMul(self, ctx:MiniDecafParser.MulContext):
+    def visitCMul(self, ctx:MiniDecafParser.MulContext):
+        self.visitChildren(ctx)
         self.binary(text(ctx.mulOp()))
 
-    def exitCRel(self, ctx:MiniDecafParser.CRelContext):
+    def visitCRel(self, ctx:MiniDecafParser.CRelContext):
+        self.visitChildren(ctx)
         self.relational(text(ctx.relOp()))
 
-    def enterAsgn(self, ctx:MiniDecafParser.AsgnContext):
+    def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
+        self._E(f"# [Asgn]")
         v = text(ctx.lhs())
         if v not in self.offsets:
             o = 8 * len(self.offsets)
             self.offsets[v] = o
-            self._E(f"# [Asgn] {v} !-> {o}")
+            self._E(f"# {v} !-> {o}")
             self._E("\taddi sp, sp, -8")
-
-    def exitAsgn(self, ctx:MiniDecafParser.AsgnContext):
+        self.visitChildren(ctx)
         self.store(text(ctx.lhs()))
 
-    def enterRet(self, ctx:MiniDecafParser.RetContext):
+    def visitRet(self, ctx:MiniDecafParser.RetContext):
         self._E(f"# [Ret]")
-
-    def exitRet(self, ctx:MiniDecafParser.RetContext):
+        self.visitChildren(ctx)
         self._E(f"# ret")
         self._E("\tbeqz zero, main_exit")
 
-    def enterTop(self, ctx:MiniDecafParser.TopContext):
+    def visitIf(self, ctx:MiniDecafParser.IfContext):
+        self._E(f"# [If]")
+        ctx.th.in_label = self.createLabel()
+        ctx.th.out_label = self.createLabel()
+        if ctx.el is not None:
+            ctx.el.in_label = self.createLabel()
+            ctx.el.out_label = ctx.th.out_label
+
+        self.visitExpr(ctx.expr())
+        self._E(
+f"""# if-jump
+\tld t0, 0(sp)
+\taddi sp, sp, 8
+\tbnez t0, {ctx.th.in_label}""")
+        if ctx.el is not None:
+            self._E(f"\tbeqz zero, {ctx.el.in_label}")
+        else:
+            self._E(f"\tbeqz zero, {ctx.th.out_label}")
+        self.visitStmtLabeled(ctx.th)
+        if ctx.el is not None: self.visitStmtLabeled(ctx.el)
+        self._E(f"{ctx.th.out_label}:")
+
+    def visitStmtLabeled(self, ctx:MiniDecafParser.StmtLabeledContext):
+        self._E(f"{ctx.in_label}:")
+        self.visitChildren(ctx)
+        self._E(f"\tbeqz zero, {ctx.out_label}")
+
+    def visitTop(self, ctx:MiniDecafParser.TopContext):
         self._E(
 """.global main
 main:
 \tmv fp, sp
 # end entry\n""")
-
-    def exitTop(self, ctx:MiniDecafParser.TopContext):
+        self.visitChildren(ctx)
         self._E(
 """# begin exit
 main_exit:
@@ -171,9 +206,8 @@ def main(argv):
     parser = MiniDecafParser(token_stream)
     tree = parser.top()
 
-    listener = RISCVAsmGen(AsmEmitter())
-    walker = ParseTreeWalker()
-    walker.walk(listener, tree)
+    visitor = RISCVAsmGen(AsmEmitter())
+    visitor.visit(tree)
 
 if __name__ == '__main__':
     main(sys.argv)
