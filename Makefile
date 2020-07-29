@@ -2,12 +2,14 @@ ANTLR_JAR=/home/hob/Programs/ta-courses/cp2020/src/neo-backend/exp/antlr-4.8-com
 
 run: grammar
 	python3 main.py input
+	python3 main.py input > output.s
+	riscv64-unknown-elf-gcc output.s
 
 grammar:
-	java -jar $(ANTLR_JAR) -Dlanguage=Python3 -visitor -no-listener -o generated MiniDecaf.g4
+	java -jar $(ANTLR_JAR) -Dlanguage=Python3 -visitor -listener -o generated MiniDecaf.g4
 
 clean:
-	rm __pycache__ generated -rf
+	rm __pycache__ generated output.s a.out -rf
 
 
 .PHONY: run FORCE grammar clean

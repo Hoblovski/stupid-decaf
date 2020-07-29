@@ -3,14 +3,42 @@ grammar MiniDecaf;
 import CommonLex;
 
 atom
-    : Integer
+    : Integer # AtomInteger
+    | '(' expr ')' # AtomParen
+    ;
+
+unary
+    : atom # tUnary
+    | unaryOp atom # cUnary
+    ;
+
+mul
+    : unary # tMul
+    | mul mulOp unary # cMul
     ;
 
 add
-    : atom (AddOp atom)*
+    : mul # tAdd
+    | add addOp mul # cAdd
     ;
 
+expr
+    : add
+    ;
 
 top
-    : add EOF
+    : expr EOF
     ;
+
+unaryOp
+    : '-'
+    ;
+
+addOp
+    : '+' | '-'
+    ;
+
+mulOp
+    : '*' | '/'
+    ;
+
