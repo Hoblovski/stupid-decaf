@@ -4,6 +4,7 @@ import CommonLex;
 
 atom
     : Integer # AtomInteger
+    | Ident # AtomIdent
     | '(' expr ')' # AtomParen
     ;
 
@@ -22,12 +23,26 @@ add
     | add addOp mul # cAdd
     ;
 
+rel
+    : add # tRel
+    | add relOp add # cRel  // to avoid quirks, forbid chained relops
+    ;
+
 expr
-    : add
+    : rel
+    ;
+
+lhs
+    : Ident
+    ;
+
+stmt
+    : lhs '=' rel ';'   # Asgn
+    | 'return' expr ';' # Ret
     ;
 
 top
-    : expr EOF
+    : stmt* EOF
     ;
 
 unaryOp
@@ -42,3 +57,6 @@ mulOp
     : '*' | '/'
     ;
 
+relOp
+    : '==' | '!=' | '<' | '>' | '<=' | '>='
+    ;
