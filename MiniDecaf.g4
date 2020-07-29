@@ -6,6 +6,7 @@ atom
     : Integer # AtomInteger
     | Ident # AtomIdent
     | '(' expr ')' # AtomParen
+    | Ident '(' exprList ')' # AtomCall
     ;
 
 unary
@@ -32,6 +33,10 @@ expr
     : rel
     ;
 
+exprList
+    : (expr (',' expr)*)?
+    ;
+
 lhs
     : Ident
     ;
@@ -47,8 +52,16 @@ stmt
     | '{' stmt '}' # Block
     ;
 
+identList
+    : (Ident (',' Ident)*)?
+    ;
+
+func
+    : 'int' Ident '(' identList ')' '{' stmt* '}'
+    ;
+
 top
-    : stmt* EOF
+    : func* stmt* EOF
     ;
 
 unaryOp
@@ -60,7 +73,7 @@ addOp
     ;
 
 mulOp
-    : '*' | '/'
+    : '*' | '/' | '%'
     ;
 
 relOp

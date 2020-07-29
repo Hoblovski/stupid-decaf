@@ -12,4 +12,9 @@ int a(x, y, w) {
     return (z+x)*max(y, w);
 }
 
-return a(4, 6, 8);
+int gcd(a, b) {
+    if (a == 0) return b;
+    return gcd(b % a, a);
+}
+
+return gcd(12, 8) + gcd(21, 7) + gcd(30, 42) + a(4, 6, 8);
