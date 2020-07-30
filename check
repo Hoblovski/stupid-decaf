@@ -1,0 +1,13 @@
+#!/bin/bash
+make clean
+make grammar
+
+FS=(`cd tests; ls *.in | sed 's/.in//'; cd ..`)
+
+for T in ${FS[@]}; do
+    cp tests/$T.in input
+    python3 main.py input > output.s
+    riscv64-unknown-elf-gcc output.s
+    qemu-riscv64 a.out
+    echo $?
+done

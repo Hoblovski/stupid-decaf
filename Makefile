@@ -4,6 +4,7 @@ run: grammar
 	python3 main.py input
 	python3 main.py input > output.s
 	riscv64-unknown-elf-gcc output.s
+	qemu-riscv64 a.out ; echo $$?
 
 grammar:
 	java -jar $(ANTLR_JAR) -Dlanguage=Python3 -visitor -listener -o generated MiniDecaf.g4
