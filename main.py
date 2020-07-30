@@ -1,4 +1,5 @@
 import sys
+from copy import deepcopy
 from antlr4 import *
 from generated.MiniDecafLexer import MiniDecafLexer
 from generated.MiniDecafParser import MiniDecafParser
@@ -41,14 +42,30 @@ class AsmEmitter:
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
         self._E = emitter
-        self.offsets = {}
+        self.varoffs = [{}]
+        self.nvars = [0]
+        self.varoffs[-1] = self.varoffs[-1]
         self.nlabels = 0
         self.curfunc = None
         self.funcinfo = {} # nargs
 
     def insert_var(self, v):
-        self.offsets[v] = -8 * (1 + len(self.offsets))
-        return self.offsets[v]
+        self.nvars[-1] += 1
+        self.varoffs[-1][v] = -8 * self.nvars[-1]
+        self._E(f"# {v} -> {self.varoffs[-1][v]}")
+        return self.varoffs[-1][v]
+
+    def enter_scope(self):
+        self.varoffs += [deepcopy(self.varoffs[-1])]
+        self.nvars += [self.nvars[-1]]
+        self.varoffs[-1] = self.varoffs[-1]
+
+    def exit_scope(self):
+        szdiff = self.nvars[-1] - self.nvars[-2]
+        self.varoffs.pop()
+        self.nvars.pop()
+        self._E(f"""# exit scope
+\taddi sp, sp, {8*szdiff}""")
 
     def createLabel(self):
         x = f"_L{self.nlabels}"
@@ -119,15 +136,15 @@ f"""\tsub t1, t1, t2
 
     def store(self, var):
         self._E(
-f"""# store {var}
+f"""# store {var} ({self.varoffs[-1][var]})
 \tld t1, 0(sp)
 \taddi sp, sp, 8
-\tsd t1, {self.offsets[var]}(fp)""")
+\tsd t1, {self.varoffs[-1][var]}(fp)""")
 
     def load(self, var):
         self._E(
 f"""# load {var}
-\tld t1, {self.offsets[var]}(fp)
+\tld t1, {self.varoffs[-1][var]}(fp)
 \taddi sp, sp, -8
 \tsd t1, 0(sp)""")
 
@@ -138,7 +155,7 @@ f""".global {name}
 {self.push("ra")}
 {self.push("fp")}
 \tmv fp, sp""")
-        self.offsets = {}
+        self.enter_scope()
         for i, param in enumerate(params):
             p = text(param)
             self.insert_var(p)
@@ -151,6 +168,7 @@ f"""\tld t1, {8 * (len(params) - i + 1)}(fp)
         self._E("# end entry\n")
 
     def epilogue(self, name):
+        self.exit_scope()
         self._E(
 f"""\n# begin exit
 {name}_exit:
@@ -167,13 +185,15 @@ f"""\n# begin exit
         self._E(self.push(text(ctx)))
 
     def visitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
-        if text(ctx) not in self.offsets:
+        if text(ctx) not in self.varoffs[-1]:
             raise Exception(f"{text(ctx)} used before define")
         self.load(text(ctx))
 
     def visitAtomCall(self, ctx:MiniDecafParser.AtomCallContext):
         args = ctx.exprList().expr()
         name = text(ctx.Ident())
+        if name not in self.funcinfo:
+            raise Exception(f"{name} function called before define")
         if len(args) != self.funcinfo[name][0]:
             raise Exception(f"{name} expects {self.funcinfo[name][0]} args but {len(args)} are provided")
         self._E(f"# call {name}")
@@ -208,10 +228,8 @@ f"""\tcall {name}
     def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
         self._E(f"# [Asgn]")
         v = text(ctx.lhs())
-        if v not in self.offsets:
-            o = self.insert_var(v)
-            self._E(f"# {v} !-> {o}")
-            self._E("\taddi sp, sp, -8")
+        if v not in self.varoffs[-1]:
+            raise Exception(f"variable {v} used before declaration")
         self.visitChildren(ctx)
         self.store(text(ctx.lhs()))
 
@@ -248,14 +266,27 @@ f"""# if-jump
         self.visitChildren(ctx)
         self._E(f"\tbeqz zero, {ctx.out_label}")
 
+    def visitBlock(self, ctx:MiniDecafParser.BlockContext):
+        self.enter_scope()
+        self.visitChildren(ctx)
+        self.exit_scope()
+
     def visitFunc(self, ctx:MiniDecafParser.FuncContext):
         name = text(ctx.Ident())
-        params = ctx.identList().Ident()
+        params = ctx.paramList().Ident()
         self.curfunc = name
         self.funcinfo[name] = (len(params),)
         self.prologue(name, params)
         for s in ctx.stmt(): s.accept(self)
         self.epilogue(name)
+
+    def visitDecl(self, ctx:MiniDecafParser.DeclContext):
+        self._E("# [Decl]")
+        self.insert_var(text(ctx.Ident()))
+        if ctx.expr() is None:
+            self._E(self.push(0))
+        else:
+            self.visitExpr(ctx.expr())
 
     def visitTop(self, ctx:MiniDecafParser.TopContext):
         for f in ctx.func():

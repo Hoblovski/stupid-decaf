@@ -45,23 +45,32 @@ stmtLabeled
     : stmt
     ;
 
-stmt
-    : lhs '=' rel ';'   # Asgn
-    | 'return' expr ';' # Ret
-    | 'if' '(' expr ')' th=stmtLabeled ('else' el=stmtLabeled)? # If
-    | '{' stmt '}' # Block
+decl
+    : ty Ident ('=' expr)? ';'
     ;
 
-identList
-    : (Ident (',' Ident)*)?
+stmt
+    : lhs '=' rel ';'   # Asgn
+    | decl # DeclStmt
+    | 'return' expr ';' # Ret
+    | 'if' '(' expr ')' th=stmtLabeled ('else' el=stmtLabeled)? # If
+    | '{' stmt* '}' # block
+    ;
+
+paramList
+    : (ty Ident (',' ty Ident)*)?
     ;
 
 func
-    : 'int' Ident '(' identList ')' '{' stmt* '}'
+    : ty Ident '(' paramList ')' '{' stmt* '}'
     ;
 
 top
     : func* stmt* EOF
+    ;
+
+ty
+    : 'int'
     ;
 
 unaryOp

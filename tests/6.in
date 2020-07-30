@@ -1,0 +1,19 @@
+int f(int a, int b) {
+    int d = 2;
+    if (a == b) {
+        int d;
+        d = 3;
+        if (a+b == 6) {
+            int d = 4;
+            return d;
+        }
+        return d;
+    }
+    return d;
+}
+
+int five = f(2, 2) + f(2, 3);
+int six;
+six = f(3, 3);
+six = six + f(2, 4);
+return five + six;
