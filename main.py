@@ -56,14 +56,16 @@ class RISCVAsmGen(MiniDecafVisitor):
         return x
 
     def push(self, x):
-        if type(x) is str:
+        try:
             x = int(x)
-        if type(x) is int:
-            self._E(
-f"""# push {x}
+            return f"""# push {x}
 \tli t1, {x}
 \taddi sp, sp, -8
-\tsd t1, 0(sp)""")
+\tsd t1, 0(sp)"""
+        except:
+            return f"""# push {x}
+\taddi sp, sp, -8
+\tsd {x}, 0(sp)"""
 
     def binary(self, op):
         try:
@@ -133,19 +135,19 @@ f"""# load {var}
         self._E(
 f""".global {name}
 {name}:
-\taddi sp, sp, -8
-\tsd ra, 0(sp)
-\taddi sp, sp, -8
-\tsd fp, 0(sp)
+{self.push("ra")}
+{self.push("fp")}
 \tmv fp, sp""")
         self.offsets = {}
         for i, param in enumerate(params):
             p = text(param)
             self.insert_var(p)
-            self._E(
-f"""\taddi sp, sp, -8
-\tsd a{i}, {self.offsets[p]}(fp)""")
-            # TODO: more args
+            if i < 2:
+                self._E(self.push(f"a{i}"))
+            else:
+                self._E(
+f"""\tld t1, {8 * (len(params) - i + 1)}(fp)
+{self.push("t1")}""")
         self._E("# end entry\n")
 
     def epilogue(self, name):
@@ -162,7 +164,7 @@ f"""\n# begin exit
         self._E("#"*78)
 
     def visitAtomInteger(self, ctx:MiniDecafParser.AtomIntegerContext):
-        self.push(text(ctx))
+        self._E(self.push(text(ctx)))
 
     def visitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
         if text(ctx) not in self.offsets:
@@ -177,17 +179,15 @@ f"""\n# begin exit
         self._E(f"# call {name}")
         for i, arg in enumerate(args):
             self.visitExpr(arg)
-            if i < 8:
+            if i < 2:
                 self._E(
 f"""# param {i}
 \tld a{i}, 0(sp)
 \taddi sp, sp, 8""")
-            else:
-                assert False # TODO: more args
+
         self._E(
 f"""\tcall {name}
-\taddi sp, sp, -8
-\tsd a0, 0(sp)""")
+{self.push("a0")}""")
 
     def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
         self.visitChildren(ctx)
@@ -263,7 +263,8 @@ f"""# if-jump
 
         self.curfunc = "main"
         self.prologue("main", [])
-        for s in ctx.stmt(): s.accept(self)
+        for s in ctx.stmt():
+            s.accept(self)
         self.epilogue("main")
 
 def main(argv):
