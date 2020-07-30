@@ -1,5 +1,5 @@
-a=2;
-b=a+3*(a+4-2);
-c=-b+a-1;
+int a=2;
+int b=a+3*(a+4-2);
+int c=-b+a-1;
 a=16;
 return a*(c+b);

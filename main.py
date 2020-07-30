@@ -5,6 +5,8 @@ from generated.MiniDecafLexer import MiniDecafLexer
 from generated.MiniDecafParser import MiniDecafParser
 from generated.MiniDecafVisitor import MiniDecafVisitor
 
+NREGARGS = 8
+
 def text(x):
     if x is not None:
         return str(x.getText())
@@ -159,7 +161,7 @@ f""".global {name}
         for i, param in enumerate(params):
             p = text(param)
             self.insert_var(p)
-            if i < 2:
+            if i < NREGARGS:
                 self._E(self.push(f"a{i}"))
             else:
                 self._E(
@@ -199,7 +201,7 @@ f"""\n# begin exit
         self._E(f"# call {name}")
         for i, arg in enumerate(args):
             self.visitExpr(arg)
-            if i < 2:
+            if i < NREGARGS:
                 self._E(
 f"""# param {i}
 \tld a{i}, 0(sp)
@@ -207,6 +209,7 @@ f"""# param {i}
 
         self._E(
 f"""\tcall {name}
+addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
 {self.push("a0")}""")
 
     def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):

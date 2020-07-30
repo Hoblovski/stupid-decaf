@@ -1,18 +1,19 @@
-int max(x, y) {
+int max(int x, int y) {
     if (x>y) return x;
     return y;
 }
 
-int b(x) {
+int b(int x) {
     return 2;
 }
 
-int a(x, y, w) {
+int a(int x, int y, int w) {
+    int z;
     z=b(x);
     return (z+x)*max(y, w);
 }
 
-int gcd(a, b) {
+int gcd(int a, int b) {
     if (a == 0) return b;
     return gcd(b % a, a);
 }

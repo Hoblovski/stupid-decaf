@@ -1,7 +1,7 @@
-a=212;
-b=345;
-c=123;
-d=0;
+int a=212;
+int b=345;
+int c=123;
+int d=0;
 if (a<b)
     if (a<c)
         d=a;
