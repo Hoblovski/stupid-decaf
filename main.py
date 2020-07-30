@@ -129,6 +129,37 @@ f"""# load {var}
 \taddi sp, sp, -8
 \tsd t1, 0(sp)""")
 
+    def prologue(self, name, params):
+        self._E(
+f""".global {name}
+{name}:
+\taddi sp, sp, -8
+\tsd ra, 0(sp)
+\taddi sp, sp, -8
+\tsd fp, 0(sp)
+\tmv fp, sp""")
+        self.offsets = {}
+        for i, param in enumerate(params):
+            p = text(param)
+            self.insert_var(p)
+            self._E(
+f"""\taddi sp, sp, -8
+\tsd a{i}, {self.offsets[p]}(fp)""")
+            # TODO: more args
+        self._E("# end entry\n")
+
+    def epilogue(self, name):
+        self._E(
+f"""\n# begin exit
+{name}_exit:
+\tld a0, 0(sp)
+\tmv sp, fp
+\tld fp, 0(sp)
+\taddi sp, sp, 8
+\tld ra, 0(sp)
+\taddi sp, sp, 8
+\tjr ra\n""")
+        self._E("#"*78)
 
     def visitAtomInteger(self, ctx:MiniDecafParser.AtomIntegerContext):
         self.push(text(ctx))
@@ -222,64 +253,18 @@ f"""# if-jump
         params = ctx.identList().Ident()
         self.curfunc = name
         self.funcinfo[name] = (len(params),)
-        self._E(
-f""".global {name}
-{name}:
-\taddi sp, sp, -8
-\tsd ra, 0(sp)
-\taddi sp, sp, -8
-\tsd fp, 0(sp)
-\tmv fp, sp""")
-        self.offsets = {}
-        for i, param in enumerate(params):
-            p = text(param)
-            self.insert_var(p)
-            self._E(
-f"""\taddi sp, sp, -8
-\tsd a{i}, {self.offsets[p]}(fp)""")
-            # TODO: more args
-        self._E("# end entry\n")
+        self.prologue(name, params)
         for s in ctx.stmt(): s.accept(self)
-        self._E(
-f"""\n# begin exit
-{name}_exit:
-\tld a0, 0(sp)
-\tmv sp, fp
-\tld fp, 0(sp)
-\taddi sp, sp, 8
-\tld ra, 0(sp)
-\taddi sp, sp, 8
-\tjr ra\n""")
-        self._E("#"*78)
+        self.epilogue(name)
 
     def visitTop(self, ctx:MiniDecafParser.TopContext):
         for f in ctx.func():
             f.accept(self)
 
         self.curfunc = "main"
-        self._E(
-""".global main
-main:
-\taddi sp, sp, -8
-\tsd ra, 0(sp)
-\taddi sp, sp, -8
-\tsd fp, 0(sp)
-\tmv fp, sp
-# end entry\n""")
-        for s in ctx.stmt():
-            s.accept(self)
-        self._E(
-"""# begin exit
-main_exit:
-\tld a0, 0(sp)
-\taddi sp, sp, 8
-\tld fp, 0(sp)
-\taddi sp, sp, 8
-\tld ra, 0(sp)
-\taddi sp, sp, 8
-\tjr ra\n""")
-
-
+        self.prologue("main", [])
+        for s in ctx.stmt(): s.accept(self)
+        self.epilogue("main")
 
 def main(argv):
     if len(argv) != 2:
