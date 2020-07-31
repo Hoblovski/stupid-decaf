@@ -143,7 +143,7 @@ def anyRuleCanApply(*rules):
 @typeRule
 def derefRule(ty):
     if ty.isPtr(): return ty.unwrapPtr()
-    return "derefRule: ptr expected, but {ty} given"
+    return f"derefRule: ptr expected, but {ty} given"
 
 
 def prod(l):
@@ -154,9 +154,9 @@ def prod(l):
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
         self._E = emitter
-        self.varoffs = [{}] # varoffs[-1][v] =x : v lies at x(fp)
-        self.vartyp = [{}] # int**: (int, 2), int: (int, 0), char*: (char, 1)
-        self.exprtyp = {}
+        self.voff = [{}] # voff[-1][v] =x : v lies at x(fp)
+        self.vtyp = [{}] # int**: (int, 2), int: (int, 0), char*: (char, 1)
+        self.etyp = {}
         self.stacksz = [0]
         self.nlabels = 0
         self.curfunc = None
@@ -175,20 +175,20 @@ class RISCVAsmGen(MiniDecafVisitor):
 
     def insert_var(self, v, ty):
         self.stacksz[-1] += ty.sizeof()
-        self.varoffs[-1][v] = - self.stacksz[-1]
-        self.vartyp[-1][v] = ty
-        self._E(f"# {v} -> {self.varoffs[-1][v]}")
+        self.voff[-1][v] = - self.stacksz[-1]
+        self.vtyp[-1][v] = ty
+        self._E(f"# {v} -> {self.voff[-1][v]}")
 
     def enter_scope(self):
-        self.varoffs += [deepcopy(self.varoffs[-1])]
-        self.vartyp += [deepcopy(self.vartyp[-1])]
+        self.voff += [deepcopy(self.voff[-1])]
+        self.vtyp += [deepcopy(self.vtyp[-1])]
         self.stacksz += [self.stacksz[-1]]
-        self.varoffs[-1] = self.varoffs[-1]
+        self.voff[-1] = self.voff[-1]
 
     def exit_scope(self):
         szdiff = self.stacksz[-1] - self.stacksz[-2]
-        self.varoffs.pop()
-        self.vartyp.pop()
+        self.voff.pop()
+        self.vtyp.pop()
         self.stacksz.pop()
         self._E(f"""# exit scope
 \taddi sp, sp, {szdiff}""")
@@ -231,8 +231,8 @@ class RISCVAsmGen(MiniDecafVisitor):
         try: # stupid C. ptrArith offset fixup
             assert op in {"+", "-"}
             rule = binaryPtrArithRule
-            lhsTy = self.exprtyp[lhs]
-            rhsTy = self.exprtyp[rhs]
+            lhsTy = self.etyp[lhs]
+            rhsTy = self.etyp[rhs]
             rule(lhsTy, rhsTy)
             if lhsTy == intTy:
                 prepareSizeof = f"\tli t3, {rhsTy.sizeof()}"
@@ -252,7 +252,7 @@ f"""# {op}
 \taddi sp, sp, 8
 \tsd t1, 0(sp)""")
 
-        retTy = rule(self.exprtyp[lhs], self.exprtyp[rhs])
+        retTy = rule(self.etyp[lhs], self.etyp[rhs])
         return retTy
 
     def unary(self, op, lhs):
@@ -277,16 +277,16 @@ f"""# {op}
         try:
             op = { "&": "addrof" }[op]
             var = text(lhs)
-            if var not in self.varoffs[-1]:
+            if var not in self.voff[-1]:
                 raise Exception(f"cannot take address of {var}")
             self._E(f"""# {op}
-\tli t1, {self.varoffs[-1][var]}
+\tli t1, {self.voff[-1][var]}
 \tadd t1, t1, fp
 {self.push("t1")}""")
-            return self.vartyp[-1][var].wrapPtr()
+            return self.vtyp[-1][var].wrapPtr()
         except KeyError: pass
 
-        return rule(self.exprtyp[lhs])
+        return rule(self.etyp[lhs])
 
     def relational(self, op, lhs, rhs):
         assert op in { "==", "!=", "<", "<=", ">", ">=" }
@@ -304,7 +304,7 @@ f"""# {op}
 f"""\tsub t1, t1, t2
 \t{op} t1, t1
 \tsd t1, 0(sp)""")
-            return rule(self.exprtyp[lhs], self.exprtyp[rhs])
+            return rule(self.etyp[lhs], self.etyp[rhs])
         except KeyError: pass
 
         try:
@@ -314,27 +314,27 @@ f"""\tsub t1, t1, t2
             if x:
                 self._E(f"\txori t1, t1, 1")
             self._E(f"\tsd t1, 0(sp)")
-            return rule(self.exprtyp[lhs], self.exprtyp[rhs])
+            return rule(self.etyp[lhs], self.etyp[rhs])
         except KeyError: pass
 
     def store(self, var):
         self._E(
-f"""# store {var} ({self.varoffs[-1][var]})
+f"""# store {var} ({self.voff[-1][var]})
 \tld t1, 0(sp)
 \taddi sp, sp, 8
-\tsd t1, {self.varoffs[-1][var]}(fp)""")
+\tsd t1, {self.voff[-1][var]}(fp)""")
 
     def load(self, var):
-        if self.vartyp[-1][var].isArr():
+        if self.vtyp[-1][var].isArr():
             self._E(
 f"""# load {var}
-\tli t1, {self.varoffs[-1][var]}
+\tli t1, {self.voff[-1][var]}
 \tadd t1, t1, fp
 {self.push("t1")}""")
         else:
             self._E(
 f"""# load {var}
-\tld t1, {self.varoffs[-1][var]}(fp)
+\tld t1, {self.voff[-1][var]}(fp)
 {self.push("t1")}""")
 
     def prologue(self, params, paramTys):
@@ -372,16 +372,16 @@ f"""\n# begin exit
 
     def visitAtomInteger(self, ctx:MiniDecafParser.AtomIntegerContext):
         self._E(self.push(text(ctx)))
-        self.exprtyp[ctx] = intTy
+        self.etyp[ctx] = intTy
 
     def visitAtomCast(self, ctx:MiniDecafParser.AtomCastContext):
         ty = ctx.ty().accept(self)
         self.visitExpr(ctx.expr())
-        self.exprtyp[ctx] = ty
+        self.etyp[ctx] = ty
 
     def visitAtomArray(self, ctx:MiniDecafParser.AtomArrayContext):
         self.visitChildren(ctx)
-        nextTy = self.exprtyp[ctx.atom()].arrNextLevel()
+        nextTy = self.etyp[ctx.atom()].arrNextLevel()
         self._E(
 f"""# (array indexing rd)
 {self.pop("t2")}
@@ -394,13 +394,13 @@ f"""# (array indexing rd)
 {self.push("t1")}""")
         else:
             self._E(self.push("t1"))
-        self.exprtyp[ctx] = nextTy
+        self.etyp[ctx] = nextTy
 
     def visitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
-        if text(ctx) not in self.varoffs[-1]:
+        if text(ctx) not in self.voff[-1]:
             raise Exception(f"{text(ctx)} used before define")
         self.load(text(ctx))
-        self.exprtyp[ctx] = self.vartyp[-1][text(ctx)]
+        self.etyp[ctx] = self.vtyp[-1][text(ctx)]
 
     def visitAtomCall(self, ctx:MiniDecafParser.AtomCallContext):
         args = ctx.exprList().expr()
@@ -414,8 +414,8 @@ f"""# (array indexing rd)
         self._E(f"# call {name}")
         for i, (arg, paramTy) in enumerate(zip(args, paramTys)):
             self.visitExpr(arg)
-            self.checkTypeCoercion(self.exprtyp[arg], paramTy,
-                f"parameter type: {paramTy} expect but {self.exprtyp[arg]} found")
+            self.checkTypeCoercion(self.etyp[arg], paramTy,
+                f"parameter type: {paramTy} expect but {self.etyp[arg]} found")
             if i < NREGARGS:
                 self._E(
 f"""# param {i}
@@ -426,30 +426,30 @@ f"""# param {i}
 f"""\tcall {name}
 addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
 {self.push("a0")}""")
-        self.exprtyp[ctx] = retTy
+        self.etyp[ctx] = retTy
 
     def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
         op = text(ctx.unaryOp())
         if op != '&':
             self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.unary(op, ctx.unary())
+        self.etyp[ctx] = self.unary(op, ctx.unary())
 
     def visitCAdd(self, ctx:MiniDecafParser.AddContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.binary(text(ctx.addOp()), ctx.add(), ctx.mul())
+        self.etyp[ctx] = self.binary(text(ctx.addOp()), ctx.add(), ctx.mul())
 
     def visitCMul(self, ctx:MiniDecafParser.MulContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.binary(text(ctx.mulOp()), ctx.mul(), ctx.unary())
+        self.etyp[ctx] = self.binary(text(ctx.mulOp()), ctx.mul(), ctx.unary())
 
     def visitCRel(self, ctx:MiniDecafParser.CRelContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.relational(text(ctx.relOp()), ctx.add(0), ctx.add(1))
+        self.etyp[ctx] = self.relational(text(ctx.relOp()), ctx.add(0), ctx.add(1))
 
     def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
         self._E(f"# [Asgn]")
         self.visitChildren(ctx) # push addr(lhs); val(rhs)
-        self.checkAsgn(self.exprtyp[ctx.lhs()], self.exprtyp[ctx.expr()]);
+        self.checkAsgn(self.etyp[ctx.lhs()], self.etyp[ctx.expr()]);
         self._E(f"""{self.pop("t1")}
 {self.pop("t2")}
 \tsd t1, 0(t2)""")
@@ -457,6 +457,8 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
     def visitRet(self, ctx:MiniDecafParser.RetContext):
         self._E(f"# [Ret]")
         self.visitChildren(ctx)
+        rule = sameType
+        rule(self.etyp[ctx.expr()], self.funcinfo[self.curfunc][1])
         self._E(f"# ret")
         self._E(f"\tbeqz zero, {self.curfunc}_exit")
 
@@ -469,6 +471,8 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
             ctx.el.out_label = ctx.th.out_label
 
         self.visitExpr(ctx.expr())
+        rule = unaryIntRule
+        rule(self.etyp[ctx.expr()])
         self._E(
 f"""# if-jump
 \tld t1, 0(sp)
@@ -531,7 +535,7 @@ f"""# if-jump
             self.insert_var(text(ctx.Ident()), ty)
             if expr is not None:
                 self.visitExpr(expr)
-                self.checkAsgn(ty, self.exprtyp[expr])
+                self.checkAsgn(ty, self.etyp[expr])
             else:
                 self._E(self.push(0))
 
@@ -548,44 +552,44 @@ f"""# if-jump
 
     def visitTUnary(self, ctx:MiniDecafParser.TUnaryContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.atom()]
+        self.etyp[ctx] = self.etyp[ctx.atom()]
 
     def visitTMul(self, ctx:MiniDecafParser.TMulContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.unary()]
+        self.etyp[ctx] = self.etyp[ctx.unary()]
 
     def visitTAdd(self, ctx:MiniDecafParser.TAddContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.mul()]
+        self.etyp[ctx] = self.etyp[ctx.mul()]
 
     def visitTRel(self, ctx:MiniDecafParser.TRelContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.add()]
+        self.etyp[ctx] = self.etyp[ctx.add()]
 
     def visitAtomParen(self, ctx:MiniDecafParser.AtomParenContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.expr()]
+        self.etyp[ctx] = self.etyp[ctx.expr()]
 
     def visitExpr(self, ctx:MiniDecafParser.ExprContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.rel()]
+        self.etyp[ctx] = self.etyp[ctx.rel()]
 
     def visitIdentLhs(self, ctx:MiniDecafParser.IdentLhsContext):
         v = text(ctx)
-        if v not in self.varoffs[-1]:
+        if v not in self.voff[-1]:
             raise Exception(f"variable {v} used before declaration")
-        self._E(f"""\tli t1, {self.varoffs[-1][v]}
+        self._E(f"""\tli t1, {self.voff[-1][v]}
 \tadd t1, t1, fp
 {self.push("t1")}""")
-        self.exprtyp[ctx] = self.vartyp[-1][v]
+        self.etyp[ctx] = self.vtyp[-1][v]
 
     def visitDerefLhs(self, ctx:MiniDecafParser.DerefLhsContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.exprtyp[ctx.expr()].unwrapPtr()
+        self.etyp[ctx] = self.etyp[ctx.expr()].unwrapPtr()
 
     def visitArrayLhs(self, ctx:MiniDecafParser.ArrayLhsContext):
         self.visitChildren(ctx)
-        nextTy = self.exprtyp[ctx.lhs()].arrNextLevel()
+        nextTy = self.etyp[ctx.lhs()].arrNextLevel()
         self._E(
 f"""# (array indexing wr)
 {self.pop("t2")}
@@ -594,7 +598,7 @@ f"""# (array indexing wr)
 {self.pop("t1")}
 \tadd t1, t1, t2
 {self.push("t1")}""")
-        self.exprtyp[ctx] = nextTy
+        self.etyp[ctx] = nextTy
 
 def main(argv):
     if len(argv) != 2:
