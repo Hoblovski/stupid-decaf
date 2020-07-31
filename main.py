@@ -16,7 +16,7 @@ class AsmEmitter:
         if output_file is None:
             self._f = sys.stdout
         else:
-            self._f = open(filename, "w")
+            self._f = open(output_file, "w")
 
     def emit(self, x:str):
         print(x, file=self._f)
@@ -40,31 +40,85 @@ class AsmEmitter:
 #                           | ra                       |
 #                           + ------------------------ +
 
+def exists(p, it):
+    return any(map(p, it))
+
+intTy = ("int", 0)
+wrapPtr = lambda x: (x[0], x[1]+1)
+
+def tyRepr(t):
+    return t[0] + "*"*t[1]
+
+def typeRule(rule):
+    def f(*args):
+        retTy = rule(*args)
+        if type(retTy) is str:
+            raise Exception(retTy)
+        return retTy
+    return f
+
+@typeRule
+def unaryIntRule(ty):
+    if ty == intTy: return intTy
+    return f"unary: expected int, given {tyRepr(ty)}"
+
+@typeRule
+def binaryIntRule(ty1, ty2):
+    if ty1 == ty2 == intTy: return intTy
+    return f"unary: expected <int, int>, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+
+@typeRule
+def binaryPtrArithRule(ty1, ty2):
+    if ty1 == intTy and ty2[1] > 0: return ty2
+    if ty2 == intTy and ty1[1] > 0: return ty1
+    return f"unary: expected ptrArith, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+
+@typeRule
+def sameType(ty1, ty2):
+    if ty1 == ty2: return intTy
+    return f"sameType: expected two identical types, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+
+@typeRule
+def anyRuleCanApply(*rules):
+    errs = []
+    def r(*arg):
+        for retTy in map(lambda r: r(*arg), rules): # map is lazy
+            if retTy is not str: return retTy
+            errs += retTy
+        return "anyRuleCanApply\n" + '\n'.join(errs)
+    return r
 
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
         self._E = emitter
         self.varoffs = [{}]
+        self.vartyp = [{}] # int**: (int, 2), int: (int, 0), char*: (char, 1)
+        self.exprtyp = {}
         self.nvars = [0]
-        self.varoffs[-1] = self.varoffs[-1]
         self.nlabels = 0
         self.curfunc = None
-        self.funcinfo = {} # nargs
+        self.funcinfo = {} # (nargs:int, argsTy:list, retTy:tuple)
 
-    def insert_var(self, v):
+    def canCoerceInto(self, ty1, ty2):
+        return ty1 == ty2
+
+    def insert_var(self, v, ty):
         self.nvars[-1] += 1
         self.varoffs[-1][v] = -8 * self.nvars[-1]
+        self.vartyp[-1][v] = ty
         self._E(f"# {v} -> {self.varoffs[-1][v]}")
         return self.varoffs[-1][v]
 
     def enter_scope(self):
         self.varoffs += [deepcopy(self.varoffs[-1])]
+        self.vartyp += [deepcopy(self.vartyp[-1])]
         self.nvars += [self.nvars[-1]]
         self.varoffs[-1] = self.varoffs[-1]
 
     def exit_scope(self):
         szdiff = self.nvars[-1] - self.nvars[-2]
         self.varoffs.pop()
+        self.vartyp.pop()
         self.nvars.pop()
         self._E(f"""# exit scope
 \taddi sp, sp, {8*szdiff}""")
@@ -86,31 +140,38 @@ class RISCVAsmGen(MiniDecafVisitor):
 \taddi sp, sp, -8
 \tsd {x}, 0(sp)"""
 
-    def binary(self, op):
-        try:
-            op = { "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "rem" }[op]
-        except: return
+    def binary(self, op, lhs, rhs):
+        opstr = { "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "rem" }[op]
         self._E(
 f"""# {op}
 \tld t2, 0(sp)
 \tld t1, 8(sp)
-\t{op} t1, t1, t2
+\t{opstr} t1, t1, t2
 \taddi sp, sp, 8
 \tsd t1, 0(sp)""")
 
-    def unary(self, op):
+        rule = { "+": anyRuleCanApply(binaryIntRule, binaryPtrArithRule),
+                "-": anyRuleCanApply(binaryIntRule, binaryPtrArithRule),
+                "*": binaryIntRule, "/": binaryIntRule, "%": binaryIntRule }[op]
+        return rule(self.exprtyp[lhs], self.exprtyp[rhs])
+
+    def unary(self, op, lhs):
         try:
             op = { "-": "neg" }[op]
-        except: return
-        self._E(
+            rule = unaryIntRule
+            self._E(
 f"""# {op}
 \tld t1, 0(sp)
 \t{op} t1, t1
 \tsd t1, 0(sp)""")
+        except KeyError: pass
 
-    def relational(self, op):
-        if op not in { "==", "!=", "<", "<=", ">", ">=" }:
-            return
+        return rule(self.exprtyp[lhs])
+
+    def relational(self, op, lhs, rhs):
+        assert op in { "==", "!=", "<", "<=", ">", ">=" }
+        rule = sameType
+
         self._E(
 f"""# {op}
 \tld t2, 0(sp)
@@ -123,8 +184,8 @@ f"""# {op}
 f"""\tsub t1, t1, t2
 \t{op} t1, t1
 \tsd t1, 0(sp)""")
-            return
-        except: pass
+            return rule(self.exprtyp[lhs], self.exprtyp[rhs])
+        except KeyError: pass
 
         try:
             x = op in { "<=", ">=" }
@@ -133,8 +194,8 @@ f"""\tsub t1, t1, t2
             if x:
                 self._E(f"\txori t1, t1, 1")
             self._E(f"\tsd t1, 0(sp)")
-            return
-        except: pass
+            return rule(self.exprtyp[lhs], self.exprtyp[rhs])
+        except KeyError: pass
 
     def store(self, var):
         self._E(
@@ -150,7 +211,7 @@ f"""# load {var}
 \taddi sp, sp, -8
 \tsd t1, 0(sp)""")
 
-    def prologue(self, name, params):
+    def prologue(self, name, params, paramTys):
         self._E(
 f""".global {name}
 {name}:
@@ -158,9 +219,9 @@ f""".global {name}
 {self.push("fp")}
 \tmv fp, sp""")
         self.enter_scope()
-        for i, param in enumerate(params):
+        for i, (param, ty) in enumerate(zip(params, paramTys)):
             p = text(param)
-            self.insert_var(p)
+            self.insert_var(p, ty)
             if i < NREGARGS:
                 self._E(self.push(f"a{i}"))
             else:
@@ -185,11 +246,13 @@ f"""\n# begin exit
 
     def visitAtomInteger(self, ctx:MiniDecafParser.AtomIntegerContext):
         self._E(self.push(text(ctx)))
+        self.exprtyp[ctx] = intTy
 
     def visitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
         if text(ctx) not in self.varoffs[-1]:
             raise Exception(f"{text(ctx)} used before define")
         self.load(text(ctx))
+        self.exprtyp[ctx] = self.vartyp[-1][text(ctx)]
 
     def visitAtomCall(self, ctx:MiniDecafParser.AtomCallContext):
         args = ctx.exprList().expr()
@@ -199,8 +262,11 @@ f"""\n# begin exit
         if len(args) != self.funcinfo[name][0]:
             raise Exception(f"{name} expects {self.funcinfo[name][0]} args but {len(args)} are provided")
         self._E(f"# call {name}")
+        paramTys = self.funcinfo[name][1]
         for i, arg in enumerate(args):
             self.visitExpr(arg)
+            if not self.canCoerceInto(self.exprtyp[arg], paramTys[i]):
+                raise Exception(f"parameter type: {paramTys[i]} expect but {self.exprtyp[arg]} found")
             if i < NREGARGS:
                 self._E(
 f"""# param {i}
@@ -211,22 +277,23 @@ f"""# param {i}
 f"""\tcall {name}
 addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
 {self.push("a0")}""")
+        self.exprtyp[ctx] = self.funcinfo[name][2]
 
     def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
         self.visitChildren(ctx)
-        self.unary(text(ctx.unaryOp()))
+        self.exprtyp[ctx] = self.unary(text(ctx.unaryOp()), ctx.atom())
 
     def visitCAdd(self, ctx:MiniDecafParser.AddContext):
         self.visitChildren(ctx)
-        self.binary(text(ctx.addOp()))
+        self.exprtyp[ctx] = self.binary(text(ctx.addOp()), ctx.add(), ctx.mul())
 
     def visitCMul(self, ctx:MiniDecafParser.MulContext):
         self.visitChildren(ctx)
-        self.binary(text(ctx.mulOp()))
+        self.exprtyp[ctx] = self.binary(text(ctx.mulOp()), ctx.mul(), ctx.unary())
 
     def visitCRel(self, ctx:MiniDecafParser.CRelContext):
         self.visitChildren(ctx)
-        self.relational(text(ctx.relOp()))
+        self.exprtyp[ctx] = self.relational(text(ctx.relOp()), ctx.add(0), ctx.add(1))
 
     def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
         self._E(f"# [Asgn]")
@@ -277,15 +344,26 @@ f"""# if-jump
     def visitFunc(self, ctx:MiniDecafParser.FuncContext):
         name = text(ctx.Ident())
         params = ctx.paramList().Ident()
+        paramTys = map(lambda x: x.accept(self), ctx.paramList().ty())
         self.curfunc = name
-        self.funcinfo[name] = (len(params),)
-        self.prologue(name, params)
+        self.funcinfo[name] = (
+                len(params),
+                list(map(lambda x: x.accept(self), ctx.paramList().ty())),
+                ctx.ty().accept(self))
+        self.prologue(name, params, paramTys)
         for s in ctx.stmt(): s.accept(self)
         self.epilogue(name)
 
+    def visitIntTy(self, ctx:MiniDecafParser.IntTyContext):
+        return ('int', 0)
+
+    def visitPtrTy(self, ctx:MiniDecafParser.PtrTyContext):
+        basety, ptrlv = ctx.ty().accept(self)
+        return (basety, ptrlv+1)
+
     def visitDecl(self, ctx:MiniDecafParser.DeclContext):
         self._E("# [Decl]")
-        self.insert_var(text(ctx.Ident()))
+        self.insert_var(text(ctx.Ident()), ctx.ty().accept(self))
         if ctx.expr() is None:
             self._E(self.push(0))
         else:
@@ -296,10 +374,35 @@ f"""# if-jump
             f.accept(self)
 
         self.curfunc = "main"
-        self.prologue("main", [])
+        self.prologue("main", [], [])
         for s in ctx.stmt():
             s.accept(self)
         self.epilogue("main")
+
+
+    def visitTUnary(self, ctx:MiniDecafParser.TUnaryContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.exprtyp[ctx.atom()]
+
+    def visitTMul(self, ctx:MiniDecafParser.TMulContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.exprtyp[ctx.unary()]
+
+    def visitTAdd(self, ctx:MiniDecafParser.TAddContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.exprtyp[ctx.mul()]
+
+    def visitTRel(self, ctx:MiniDecafParser.TRelContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.exprtyp[ctx.add()]
+
+    def visitAtomParen(self, ctx:MiniDecafParser.AtomParenContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.exprtyp[ctx.expr()]
+
+    def visitExpr(self, ctx:MiniDecafParser.ExprContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.exprtyp[ctx.rel()]
 
 def main(argv):
     if len(argv) != 2:
@@ -312,7 +415,7 @@ def main(argv):
     parser = MiniDecafParser(token_stream)
     tree = parser.top()
 
-    visitor = RISCVAsmGen(AsmEmitter())
+    visitor = RISCVAsmGen(AsmEmitter('output.s'))
     visitor.visit(tree)
 
 if __name__ == '__main__':

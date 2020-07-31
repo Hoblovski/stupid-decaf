@@ -8,7 +8,7 @@ NPASS=0
 NTOT=${#FS[@]}
 for T in ${FS[@]}; do
     cp tests/$T.in input
-    python3 main.py input > output.s
+    python3 main.py input
     riscv64-unknown-elf-gcc output.s
     qemu-riscv64 a.out
     echo $? > output

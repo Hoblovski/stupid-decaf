@@ -70,11 +70,12 @@ top
     ;
 
 ty
-    : 'int'
+    : 'int' # IntTy
+    | ty ptr='*' # PtrTy
     ;
 
 unaryOp
-    : '-'
+    : '-' | '&' | '*'
     ;
 
 addOp
