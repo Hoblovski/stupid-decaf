@@ -45,6 +45,7 @@ def exists(p, it):
 
 intTy = ("int", 0)
 wrapPtr = lambda x: (x[0], x[1]+1)
+unwrapPtr = lambda x: (x[0], x[1]-1)
 
 def tyRepr(t):
     return t[0] + "*"*t[1]
@@ -85,13 +86,23 @@ def anyRuleCanApply(*rules):
         for retTy in map(lambda r: r(*arg), rules): # map is lazy
             if retTy is not str: return retTy
             errs += retTy
-        return "anyRuleCanApply\n" + '\n'.join(errs)
+        return "anyRuleCanApply:\n  " + '\n  '.join(errs)
     return r
+
+@typeRule
+def derefRule(ty):
+    if ty[1] > 0: return unwrapPtr(ty)
+    return "derefRule: ptr expected, but {tyRepr(ty)} given"
+
+@typeRule
+def addrofRule(ty):
+    return wrapPtr(ty)
+
 
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
         self._E = emitter
-        self.varoffs = [{}]
+        self.varoffs = [{}] # varoffs[-1][v] =x : v lies at x(fp)
         self.vartyp = [{}] # int**: (int, 2), int: (int, 0), char*: (char, 1)
         self.exprtyp = {}
         self.nvars = [0]
@@ -99,8 +110,11 @@ class RISCVAsmGen(MiniDecafVisitor):
         self.curfunc = None
         self.funcinfo = {} # (nargs:int, argsTy:list, retTy:tuple)
 
-    def canCoerceInto(self, ty1, ty2):
-        return ty1 == ty2
+    def checkTypeCoercion(self, ty1, ty2, msg=None):
+        if msg is None:
+            msg = f"cannot assign {ty2} to {ty1}"
+        if not ty1 == ty2:
+            raise Exception(msg)
 
     def insert_var(self, v, ty):
         self.nvars[-1] += 1
@@ -140,6 +154,17 @@ class RISCVAsmGen(MiniDecafVisitor):
 \taddi sp, sp, -8
 \tsd {x}, 0(sp)"""
 
+    def pop(self, x):
+        try:
+            x = int(x)
+            return f"""# pop {x} * 8
+\taddi sp, sp, {8*x}"""
+        except:
+            return f"""# pop {x}
+\tld {x}, 0(sp)
+\taddi sp, sp, 8"""
+
+
     def binary(self, op, lhs, rhs):
         opstr = { "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "rem" }[op]
         self._E(
@@ -159,11 +184,31 @@ f"""# {op}
         try:
             op = { "-": "neg" }[op]
             rule = unaryIntRule
-            self._E(
-f"""# {op}
+            self._E(f"""# {op}
 \tld t1, 0(sp)
 \t{op} t1, t1
 \tsd t1, 0(sp)""")
+        except KeyError: pass
+
+        try:
+            op = { "*": "deref" }[op]
+            rule = derefRule
+            self._E(f"""# {op}
+{self.pop("t1")}
+\tld t1, 0(t1)
+{self.push("t1")}""")
+        except KeyError: pass
+
+        try:
+            op = { "&": "addrof" }[op]
+            var = text(lhs)
+            if var not in self.varoffs[-1]:
+                raise Exception(f"cannot take address of {var}")
+            self._E(f"""# {op}
+\tli t1, {self.varoffs[-1][var]}
+\tadd t1, t1, fp
+{self.push("t1")}""")
+            return wrapPtr(self.vartyp[-1][var])
         except KeyError: pass
 
         return rule(self.exprtyp[lhs])
@@ -265,8 +310,8 @@ f"""\n# begin exit
         paramTys = self.funcinfo[name][1]
         for i, arg in enumerate(args):
             self.visitExpr(arg)
-            if not self.canCoerceInto(self.exprtyp[arg], paramTys[i]):
-                raise Exception(f"parameter type: {paramTys[i]} expect but {self.exprtyp[arg]} found")
+            self.checkTypeCoercion(self.exprtyp[arg], paramTys[i],
+                f"parameter type: {paramTys[i]} expect but {self.exprtyp[arg]} found")
             if i < NREGARGS:
                 self._E(
 f"""# param {i}
@@ -280,8 +325,10 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
         self.exprtyp[ctx] = self.funcinfo[name][2]
 
     def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
-        self.visitChildren(ctx)
-        self.exprtyp[ctx] = self.unary(text(ctx.unaryOp()), ctx.atom())
+        op = text(ctx.unaryOp())
+        if op != '&':
+            self.visitChildren(ctx)
+        self.exprtyp[ctx] = self.unary(op, ctx.unary())
 
     def visitCAdd(self, ctx:MiniDecafParser.AddContext):
         self.visitChildren(ctx)
@@ -296,12 +343,12 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
         self.exprtyp[ctx] = self.relational(text(ctx.relOp()), ctx.add(0), ctx.add(1))
 
     def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
-        self._E(f"# [Asgn]")
-        v = text(ctx.lhs())
-        if v not in self.varoffs[-1]:
-            raise Exception(f"variable {v} used before declaration")
-        self.visitChildren(ctx)
-        self.store(text(ctx.lhs()))
+        self.visitChildren(ctx) # push addr(lhs); val(rhs)
+        self.checkTypeCoercion(self.exprtyp[ctx.lhs()], self.exprtyp[ctx.expr()]);
+        self._E(f"""# [Asgn]
+{self.pop("t1")}
+{self.pop("t2")}
+sd t1, 0(t2)""")
 
     def visitRet(self, ctx:MiniDecafParser.RetContext):
         self._E(f"# [Ret]")
@@ -354,6 +401,10 @@ f"""# if-jump
         for s in ctx.stmt(): s.accept(self)
         self.epilogue(name)
 
+    def visitExprStmt(self, ctx:MiniDecafParser.ExprStmtContext):
+        self.visitChildren(ctx)
+        self._E(self.pop(1))
+
     def visitIntTy(self, ctx:MiniDecafParser.IntTyContext):
         return ('int', 0)
 
@@ -363,11 +414,13 @@ f"""# if-jump
 
     def visitDecl(self, ctx:MiniDecafParser.DeclContext):
         self._E("# [Decl]")
-        self.insert_var(text(ctx.Ident()), ctx.ty().accept(self))
+        ty = ctx.ty().accept(self)
+        self.insert_var(text(ctx.Ident()), ty)
         if ctx.expr() is None:
             self._E(self.push(0))
         else:
             self.visitExpr(ctx.expr())
+            self.checkTypeCoercion(ty, self.exprtyp[ctx.expr()])
 
     def visitTop(self, ctx:MiniDecafParser.TopContext):
         for f in ctx.func():
@@ -378,7 +431,6 @@ f"""# if-jump
         for s in ctx.stmt():
             s.accept(self)
         self.epilogue("main")
-
 
     def visitTUnary(self, ctx:MiniDecafParser.TUnaryContext):
         self.visitChildren(ctx)
@@ -403,6 +455,18 @@ f"""# if-jump
     def visitExpr(self, ctx:MiniDecafParser.ExprContext):
         self.visitChildren(ctx)
         self.exprtyp[ctx] = self.exprtyp[ctx.rel()]
+
+    def visitIdentLhs(self, ctx:MiniDecafParser.IdentLhsContext):
+        v = text(ctx)
+        if v not in self.varoffs[-1]:
+            raise Exception(f"variable {v} used before declaration")
+        self._E(self.push(self.varoffs[-1][v]))
+        self.exprtyp[cyx] = self.vartyp[-1][v]
+
+    def visitDerefLhs(self, ctx:MiniDecafParser.DerefLhsContext):
+        self.visitChildren(ctx)
+        self.exprtyp[ctx] = unwrapPtr(self.exprtyp[ctx.expr()])
+
 
 def main(argv):
     if len(argv) != 2:

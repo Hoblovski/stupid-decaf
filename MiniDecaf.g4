@@ -11,7 +11,7 @@ atom
 
 unary
     : atom # tUnary
-    | unaryOp atom # cUnary
+    | unaryOp unary # cUnary
     ;
 
 mul
@@ -38,7 +38,8 @@ exprList
     ;
 
 lhs
-    : Ident
+    : Ident # IdentLhs
+    | '*' expr # DerefLhs
     ;
 
 stmtLabeled
@@ -50,8 +51,9 @@ decl
     ;
 
 stmt
-    : lhs '=' rel ';'   # Asgn
+    : lhs '=' expr ';'   # Asgn
     | decl # DeclStmt
+    | expr ';' # ExprStmt
     | 'return' expr ';' # Ret
     | 'if' '(' expr ')' th=stmtLabeled ('else' el=stmtLabeled)? # If
     | '{' stmt* '}' # block
