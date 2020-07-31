@@ -47,6 +47,9 @@ intTy = ("int", 0)
 wrapPtr = lambda x: (x[0], x[1]+1)
 unwrapPtr = lambda x: (x[0], x[1]-1)
 
+def sizeof(ty):
+    return 8
+
 def tyRepr(t):
     return t[0] + "*"*t[1]
 
@@ -61,18 +64,18 @@ def typeRule(rule):
 @typeRule
 def unaryIntRule(ty):
     if ty == intTy: return intTy
-    return f"unary: expected int, given {tyRepr(ty)}"
+    return f"unaryInt: expected int, given {tyRepr(ty)}"
 
 @typeRule
 def binaryIntRule(ty1, ty2):
     if ty1 == ty2 == intTy: return intTy
-    return f"unary: expected <int, int>, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+    return f"binaryInt: expected <int, int>, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
 
 @typeRule
 def binaryPtrArithRule(ty1, ty2):
     if ty1 == intTy and ty2[1] > 0: return ty2
     if ty2 == intTy and ty1[1] > 0: return ty1
-    return f"unary: expected ptrArith, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+    return f"unaryPtrArith: expected ptrArith, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
 
 @typeRule
 def sameType(ty1, ty2):
@@ -81,23 +84,20 @@ def sameType(ty1, ty2):
 
 @typeRule
 def anyRuleCanApply(*rules):
-    errs = []
-    def r(*arg):
-        for retTy in map(lambda r: r(*arg), rules): # map is lazy
-            if retTy is not str: return retTy
-            errs += retTy
-        return "anyRuleCanApply:\n  " + '\n  '.join(errs)
+    def r(*args):
+        errs = []
+        for rule in rules:
+            try:
+                return rule(*args)
+            except Exception as e:
+                errs += [str(e)]
+        return "anyRuleCanApply: all alternatives failed" + '\n  '.join([""]+errs)
     return r
 
 @typeRule
 def derefRule(ty):
     if ty[1] > 0: return unwrapPtr(ty)
     return "derefRule: ptr expected, but {tyRepr(ty)} given"
-
-@typeRule
-def addrofRule(ty):
-    return wrapPtr(ty)
-
 
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
@@ -167,18 +167,35 @@ class RISCVAsmGen(MiniDecafVisitor):
 
     def binary(self, op, lhs, rhs):
         opstr = { "+": "add", "-": "sub", "*": "mul", "/": "div", "%": "rem" }[op]
+
+        prepareSizeof = ""
+        prepareRhs = "\tld t2, 0(sp)"
+        prepareLhs = "\tld t1, 8(sp)"
+
+        try: # stupid C. ptrArith offset fixup
+            assert op in {"+", "-"}
+            rule = binaryPtrArithRule
+            rule(self.exprtyp[lhs], self.exprtyp[rhs])
+            if self.exprtyp[lhs] is int:
+                prepareSizeof = f"\tli t3, {sizeof(self.exprtyp[rhs])}"
+                prepareLhs += f"\n\tmul t1, t1, t3"
+            else:
+                prepareSizeof = f"\tli t3, {sizeof(self.exprtyp[lhs])}"
+                prepareRhs += f"\n\tmul t2, t2, t3"
+        except:
+            rule = binaryIntRule
+
         self._E(
 f"""# {op}
-\tld t2, 0(sp)
-\tld t1, 8(sp)
+{prepareSizeof}
+{prepareRhs}
+{prepareLhs}
 \t{opstr} t1, t1, t2
 \taddi sp, sp, 8
 \tsd t1, 0(sp)""")
 
-        rule = { "+": anyRuleCanApply(binaryIntRule, binaryPtrArithRule),
-                "-": anyRuleCanApply(binaryIntRule, binaryPtrArithRule),
-                "*": binaryIntRule, "/": binaryIntRule, "%": binaryIntRule }[op]
-        return rule(self.exprtyp[lhs], self.exprtyp[rhs])
+        retTy = rule(self.exprtyp[lhs], self.exprtyp[rhs])
+        return retTy
 
     def unary(self, op, lhs):
         try:
