@@ -7,6 +7,8 @@ atom
     | Ident # AtomIdent
     | '(' expr ')' # AtomParen
     | Ident '(' exprList ')' # AtomCall
+    | atom '[' expr ']' # AtomArray
+    | '(' ty ')' expr # AtomCast
     ;
 
 unary
@@ -40,6 +42,7 @@ exprList
 lhs
     : Ident # IdentLhs
     | '*' expr # DerefLhs
+    | lhs ('[' expr ']') # ArrayLhs
     ;
 
 stmtLabeled
@@ -48,6 +51,7 @@ stmtLabeled
 
 decl
     : ty Ident ('=' expr)? ';'
+    | ty Ident ('[' Integer ']')* ';'
     ;
 
 stmt

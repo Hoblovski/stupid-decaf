@@ -64,10 +64,35 @@ class Typ:
         return oth
 
     def sizeof(self):
-        return 8
+        if not self.isArr():
+            return 8
+        else:
+            return self.arrBase().sizeof() * self.arrElemCnt()
 
     def isPtr(self):
         return self.ptrLvs > 0
+
+    def isArr(self):
+        return len(self.arrDims) > 0
+
+    def arrElemCnt(self):
+        assert len(self.arrDims) > 0
+        return prod(self.arrDims)
+
+    def arrBase(self):
+        oth = deepcopy(self)
+        oth.arrDims = []
+        return oth
+
+    def arrNextLevel(self):
+        oth = deepcopy(self)
+        oth.arrDims = oth.arrDims[1:]
+        return oth
+
+    def toArr(self, arrDims):
+        oth = deepcopy(self)
+        oth.arrDims = arrDims
+        return oth
 
     def __str__(self):
         return self.base + "*"*self.ptrLvs + ''.join(map(lambda d: f"[{d}]", self.arrDims))
@@ -121,6 +146,10 @@ def derefRule(ty):
     return "derefRule: ptr expected, but {ty} given"
 
 
+def prod(l):
+    p = 1
+    for i in l: p *= i
+    return p
 
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
@@ -128,10 +157,10 @@ class RISCVAsmGen(MiniDecafVisitor):
         self.varoffs = [{}] # varoffs[-1][v] =x : v lies at x(fp)
         self.vartyp = [{}] # int**: (int, 2), int: (int, 0), char*: (char, 1)
         self.exprtyp = {}
-        self.nvars = [0]
+        self.stacksz = [0]
         self.nlabels = 0
         self.curfunc = None
-        self.funcinfo = {} # (nargs:int, argsTy:list, retTy:tuple)
+        self.funcinfo = {} # (argsTy:list, retTy:Typ)
 
     def checkTypeCoercion(self, ty1, ty2, msg=None):
         if msg is None:
@@ -139,26 +168,30 @@ class RISCVAsmGen(MiniDecafVisitor):
         if not ty1 == ty2:
             raise Exception(msg)
 
+    def checkAsgn(self, ty1, ty2, msg=None):
+        self.checkTypeCoercion(ty1, ty2, msg)
+        if ty1.isArr():
+            raise Exception("cannot assign to an array")
+
     def insert_var(self, v, ty):
-        self.nvars[-1] += 1
-        self.varoffs[-1][v] = -8 * self.nvars[-1]
+        self.stacksz[-1] += ty.sizeof()
+        self.varoffs[-1][v] = - self.stacksz[-1]
         self.vartyp[-1][v] = ty
         self._E(f"# {v} -> {self.varoffs[-1][v]}")
-        return self.varoffs[-1][v]
 
     def enter_scope(self):
         self.varoffs += [deepcopy(self.varoffs[-1])]
         self.vartyp += [deepcopy(self.vartyp[-1])]
-        self.nvars += [self.nvars[-1]]
+        self.stacksz += [self.stacksz[-1]]
         self.varoffs[-1] = self.varoffs[-1]
 
     def exit_scope(self):
-        szdiff = self.nvars[-1] - self.nvars[-2]
+        szdiff = self.stacksz[-1] - self.stacksz[-2]
         self.varoffs.pop()
         self.vartyp.pop()
-        self.nvars.pop()
+        self.stacksz.pop()
         self._E(f"""# exit scope
-\taddi sp, sp, {8*szdiff}""")
+\taddi sp, sp, {szdiff}""")
 
     def createLabel(self):
         x = f"_L{self.nlabels}"
@@ -198,12 +231,14 @@ class RISCVAsmGen(MiniDecafVisitor):
         try: # stupid C. ptrArith offset fixup
             assert op in {"+", "-"}
             rule = binaryPtrArithRule
-            rule(self.exprtyp[lhs], self.exprtyp[rhs])
-            if self.exprtyp[lhs] is int:
-                prepareSizeof = f"\tli t3, {sizeof(self.exprtyp[rhs])}"
+            lhsTy = self.exprtyp[lhs]
+            rhsTy = self.exprtyp[rhs]
+            rule(lhsTy, rhsTy)
+            if lhsTy == intTy:
+                prepareSizeof = f"\tli t3, {rhsTy.sizeof()}"
                 prepareLhs += f"\n\tmul t1, t1, t3"
             else:
-                prepareSizeof = f"\tli t3, {sizeof(self.exprtyp[lhs])}"
+                prepareSizeof = f"\tli t3, {lhsTy.sizeof()}"
                 prepareRhs += f"\n\tmul t2, t2, t3"
         except:
             rule = binaryIntRule
@@ -290,16 +325,22 @@ f"""# store {var} ({self.varoffs[-1][var]})
 \tsd t1, {self.varoffs[-1][var]}(fp)""")
 
     def load(self, var):
-        self._E(
+        if self.vartyp[-1][var].isArr():
+            self._E(
+f"""# load {var}
+\tli t1, {self.varoffs[-1][var]}
+\tadd t1, t1, fp
+{self.push("t1")}""")
+        else:
+            self._E(
 f"""# load {var}
 \tld t1, {self.varoffs[-1][var]}(fp)
-\taddi sp, sp, -8
-\tsd t1, 0(sp)""")
+{self.push("t1")}""")
 
-    def prologue(self, name, params, paramTys):
+    def prologue(self, params, paramTys):
         self._E(
-f""".global {name}
-{name}:
+f""".global {self.curfunc}
+{self.curfunc}:
 {self.push("ra")}
 {self.push("fp")}
 \tmv fp, sp""")
@@ -310,16 +351,16 @@ f""".global {name}
             if i < NREGARGS:
                 self._E(self.push(f"a{i}"))
             else:
-                self._E(
+                self._E(# XXX: forbid array args, arg could only be 8 bytes
 f"""\tld t1, {8 * (len(params) - i + 1)}(fp)
 {self.push("t1")}""")
         self._E("# end entry\n")
 
-    def epilogue(self, name):
+    def epilogue(self):
         self.exit_scope()
         self._E(
 f"""\n# begin exit
-{name}_exit:
+{self.curfunc}_exit:
 \tld a0, 0(sp)
 \tmv sp, fp
 \tld fp, 0(sp)
@@ -333,6 +374,28 @@ f"""\n# begin exit
         self._E(self.push(text(ctx)))
         self.exprtyp[ctx] = intTy
 
+    def visitAtomCast(self, ctx:MiniDecafParser.AtomCastContext):
+        ty = ctx.ty().accept(self)
+        self.visitExpr(ctx.expr())
+        self.exprtyp[ctx] = ty
+
+    def visitAtomArray(self, ctx:MiniDecafParser.AtomArrayContext):
+        self.visitChildren(ctx)
+        nextTy = self.exprtyp[ctx.atom()].arrNextLevel()
+        self._E(
+f"""# (array indexing rd)
+{self.pop("t2")}
+\tli t3, {nextTy.sizeof()}
+\tmul t2, t2, t3
+{self.pop("t1")}
+\tadd t1, t1, t2""")
+        if not nextTy.isArr(): # last level: load the value
+            self._E(f"""ld t1, 0(t1)
+{self.push("t1")}""")
+        else:
+            self._E(self.push("t1"))
+        self.exprtyp[ctx] = nextTy
+
     def visitAtomIdent(self, ctx:MiniDecafParser.AtomIdentContext):
         if text(ctx) not in self.varoffs[-1]:
             raise Exception(f"{text(ctx)} used before define")
@@ -344,14 +407,15 @@ f"""\n# begin exit
         name = text(ctx.Ident())
         if name not in self.funcinfo:
             raise Exception(f"{name} function called before define")
-        if len(args) != self.funcinfo[name][0]:
-            raise Exception(f"{name} expects {self.funcinfo[name][0]} args but {len(args)} are provided")
+        paramTys = self.funcinfo[name][0]
+        retTy = self.funcinfo[name][1]
+        if len(args) != len(paramTys):
+            raise Exception(f"{name} expects {len(paramTys)} args but {len(args)} are provided")
         self._E(f"# call {name}")
-        paramTys = self.funcinfo[name][1]
-        for i, arg in enumerate(args):
+        for i, (arg, paramTy) in enumerate(zip(args, paramTys)):
             self.visitExpr(arg)
-            self.checkTypeCoercion(self.exprtyp[arg], paramTys[i],
-                f"parameter type: {paramTys[i]} expect but {self.exprtyp[arg]} found")
+            self.checkTypeCoercion(self.exprtyp[arg], paramTy,
+                f"parameter type: {paramTy} expect but {self.exprtyp[arg]} found")
             if i < NREGARGS:
                 self._E(
 f"""# param {i}
@@ -362,7 +426,7 @@ f"""# param {i}
 f"""\tcall {name}
 addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
 {self.push("a0")}""")
-        self.exprtyp[ctx] = self.funcinfo[name][2]
+        self.exprtyp[ctx] = retTy
 
     def visitCUnary(self, ctx:MiniDecafParser.CUnaryContext):
         op = text(ctx.unaryOp())
@@ -385,7 +449,7 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
     def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
         self._E(f"# [Asgn]")
         self.visitChildren(ctx) # push addr(lhs); val(rhs)
-        self.checkTypeCoercion(self.exprtyp[ctx.lhs()], self.exprtyp[ctx.expr()]);
+        self.checkAsgn(self.exprtyp[ctx.lhs()], self.exprtyp[ctx.expr()]);
         self._E(f"""{self.pop("t1")}
 {self.pop("t2")}
 \tsd t1, 0(t2)""")
@@ -434,12 +498,11 @@ f"""# if-jump
         paramTys = map(lambda x: x.accept(self), ctx.paramList().ty())
         self.curfunc = name
         self.funcinfo[name] = (
-                len(params),
                 list(map(lambda x: x.accept(self), ctx.paramList().ty())),
                 ctx.ty().accept(self))
-        self.prologue(name, params, paramTys)
+        self.prologue(params, paramTys)
         for s in ctx.stmt(): s.accept(self)
-        self.epilogue(name)
+        self.epilogue()
 
     def visitExprStmt(self, ctx:MiniDecafParser.ExprStmtContext):
         self.visitChildren(ctx)
@@ -455,22 +518,33 @@ f"""# if-jump
     def visitDecl(self, ctx:MiniDecafParser.DeclContext):
         self._E("# [Decl]")
         ty = ctx.ty().accept(self)
-        self.insert_var(text(ctx.Ident()), ty)
-        if ctx.expr() is None:
-            self._E(self.push(0))
+        expr = ctx.expr()
+        dims = [int(text(x)) for x in ctx.Integer()]
+        if len(dims) > 0:
+            elemsz = ty.sizeof()
+            ty = ty.toArr(dims)
+            self.insert_var(text(ctx.Ident()), ty)
+            self._E(f"\taddi sp, sp, {-ty.sizeof()}")
+            for i in range(ty.arrElemCnt()):
+                self._E(f"\tsd zero, {i*elemsz}(sp)")
         else:
-            self.visitExpr(ctx.expr())
-            self.checkTypeCoercion(ty, self.exprtyp[ctx.expr()])
+            self.insert_var(text(ctx.Ident()), ty)
+            if expr is not None:
+                self.visitExpr(expr)
+                self.checkAsgn(ty, self.exprtyp[expr])
+            else:
+                self._E(self.push(0))
 
     def visitTop(self, ctx:MiniDecafParser.TopContext):
         for f in ctx.func():
             f.accept(self)
 
         self.curfunc = "main"
-        self.prologue("main", [], [])
+        self.funcinfo["main"] = ([], intTy)
+        self.prologue([], [])
         for s in ctx.stmt():
             s.accept(self)
-        self.epilogue("main")
+        self.epilogue()
 
     def visitTUnary(self, ctx:MiniDecafParser.TUnaryContext):
         self.visitChildren(ctx)
@@ -500,8 +574,8 @@ f"""# if-jump
         v = text(ctx)
         if v not in self.varoffs[-1]:
             raise Exception(f"variable {v} used before declaration")
-        self._E(f"""li t1, {self.varoffs[-1][v]}
-add t1, t1, fp
+        self._E(f"""\tli t1, {self.varoffs[-1][v]}
+\tadd t1, t1, fp
 {self.push("t1")}""")
         self.exprtyp[ctx] = self.vartyp[-1][v]
 
@@ -509,6 +583,18 @@ add t1, t1, fp
         self.visitChildren(ctx)
         self.exprtyp[ctx] = self.exprtyp[ctx.expr()].unwrapPtr()
 
+    def visitArrayLhs(self, ctx:MiniDecafParser.ArrayLhsContext):
+        self.visitChildren(ctx)
+        nextTy = self.exprtyp[ctx.lhs()].arrNextLevel()
+        self._E(
+f"""# (array indexing wr)
+{self.pop("t2")}
+\tli t3, {nextTy.sizeof()}
+\tmul t2, t2, t3
+{self.pop("t1")}
+\tadd t1, t1, t2
+{self.push("t1")}""")
+        self.exprtyp[ctx] = nextTy
 
 def main(argv):
     if len(argv) != 2:
