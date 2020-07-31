@@ -1,0 +1,73 @@
+int qsort(int *a, int l, int r) {
+    int i = l;
+    int j = r;
+    int p = *(a + (l+r)/2);
+    int flag = 1;
+    while (i <= j) {
+        while (*(a+i) < p) i = i + 1;
+        while (*(a+j) > p) j = j - 1;
+        if (i > j) break;
+        int u = *(a+i); *(a+i) = *(a+j); *(a+j) = u;
+        i = i + 1;
+        j = j - 1;
+    }
+    if (i < r) qsort(a, i, r);
+    if (j > l) qsort(a, l, j);
+}
+
+int rand(int *state) {
+    *state = *state * 5000087 + 1982505312801;
+    return *state % 1000;
+}
+
+int initArr(int n, int *a) {
+    int state = 47423090843;
+    int i = 0;
+    while (i < n) {
+        *(a+i) = rand(&state);
+        i = i + 1;
+    }
+}
+
+int printArr(int n, int *a) {
+    int i = 0;
+    while (i < n) {
+        print *(a+i), ;
+        i = i + 1;
+    }
+    print ;
+}
+
+int isSorted(int n, int *a) {
+    int i = 0;
+    while (i < n-1) {
+        if ( *(a+i) > *(a+i+1) )
+            return 0;
+        i = i + 1;
+    }
+    return 1;
+}
+
+{
+    int n = 4;
+    int a[4];
+    int* ap = (int*) a;
+    initArr(n, ap);
+    printArr(n, ap);
+    qsort(ap, 0, n-1);
+    printArr(n, ap);
+}
+{
+    int n = 200;
+    int a[200];
+    
+    int caseno = 0;
+    while (caseno < 100) {
+        int* ap = (int*) a;
+        initArr(n, ap);
+        qsort(ap, 0, n-1);
+        print isSorted(n, ap), ;
+        if (caseno % 10 ==9) print ;
+        caseno = caseno + 1;
+    }
+}

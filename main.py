@@ -163,6 +163,7 @@ class RISCVAsmGen(MiniDecafVisitor):
         self.nlabels = 0
         self.curfunc = None
         self.funcinfo = {} # (argsTy:list, retTy:Typ)
+        self.loopinfo = [] # (breakLabel)
 
     def checkTypeCoercion(self, ty1, ty2, msg=None):
         if msg is None:
@@ -497,6 +498,10 @@ f"""# if-jump
         self.visitChildren(ctx)
         self.exit_scope()
 
+    def visitBreak(self, ctx:MiniDecafParser.BreakContext):
+        self._E(f"""# [Break]
+\tbeqz zero, {self.loopinfo[-1][0]}""")
+
     def visitFunc(self, ctx:MiniDecafParser.FuncContext):
         name = text(ctx.Ident())
         params = ctx.paramList().Ident()
@@ -526,7 +531,9 @@ f"""# while-jump
         self._E(
 f"""{self.pop("t1")}
 \tbeqz t1, {out_label}""")
+        self.loopinfo += [(out_label,)]
         ctx.stmt().accept(self)
+        self.loopinfo.pop()
         self._E(
 f"""beqz zero, {in_label}
 {out_label}:""")
@@ -535,12 +542,7 @@ f"""beqz zero, {in_label}
         self._E(f"# [Print]")
         args = [None, None] + ctx.exprList().expr()
         for i, arg in enumerate(args):
-            if i == 0:
-                self._E(f"li a0, {int(ctx.noeol is not None)}")
-                continue
-            if i == 1:
-                self._E(f"li a1, {len(args) - 2}")
-                continue
+            if i < 2: continue
             arg.accept(self)
             if i < NREGARGS:
                 self._E(
@@ -548,8 +550,9 @@ f"""# param {i}
 \tld a{i}, 0(sp)
 \taddi sp, sp, 8""")
 
-        self._E(
-f"""\tcall __print
+        self._E(f"""\tli a0, {int(ctx.noeol is not None)}
+\tli a1, {len(args) - 2}
+\tcall __print
 addi sp, sp, {8 * max(0, len(args) - NREGARGS)}""")
         self.etyp[ctx] = intTy
 

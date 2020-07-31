@@ -62,7 +62,8 @@ stmt
     | 'if' '(' expr ')' th=stmt ('else' el=stmt)? # If
     | 'while' '(' expr ')' stmt # While
     | 'print' exprList noeol=','? ';' # Print
-    | '{' stmt* '}' # block
+    | '{' stmt* '}' # Block
+    | 'break' ';' # Break
     ;
 
 paramList
