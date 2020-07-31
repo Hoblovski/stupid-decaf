@@ -10,12 +10,12 @@ gui:
 
 run: grammar
 	python3 main.py input
-	riscv64-unknown-elf-gcc output.s
-	qemu-riscv64 a.out ; echo $$?
+	riscv64-unknown-elf-gcc output.s runtime.c
+	qemu-riscv64 a.out ; echo [Command returned] $$?
 
 gcc:
-	riscv64-unknown-elf-gcc output.s
-	qemu-riscv64 a.out ; echo $$?
+	riscv64-unknown-elf-gcc output.s runtime.c
+	qemu-riscv64 a.out ; echo [Command returned] $$?
 
 grammar:
 	java -jar $(ANTLR_JAR) -Dlanguage=Python3 -visitor -listener -o generated MiniDecaf.g4

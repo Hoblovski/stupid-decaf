@@ -86,6 +86,8 @@ class Typ:
 
     def arrNextLevel(self):
         oth = deepcopy(self)
+        if len(oth.arrDims) == 0:
+            raise Exception("trying to take indice of non-array value")
         oth.arrDims = oth.arrDims[1:]
         return oth
 
@@ -413,7 +415,7 @@ f"""# (array indexing rd)
             raise Exception(f"{name} expects {len(paramTys)} args but {len(args)} are provided")
         self._E(f"# call {name}")
         for i, (arg, paramTy) in enumerate(zip(args, paramTys)):
-            self.visitExpr(arg)
+            arg.accept(self)
             self.checkTypeCoercion(self.etyp[arg], paramTy,
                 f"parameter type: {paramTy} expect but {self.etyp[arg]} found")
             if i < NREGARGS:
@@ -475,21 +477,20 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
         rule(self.etyp[ctx.expr()])
         self._E(
 f"""# if-jump
-\tld t1, 0(sp)
-\taddi sp, sp, 8
+{self.pop("t1")}
 \tbnez t1, {ctx.th.in_label}""")
         if ctx.el is not None:
             self._E(f"\tbeqz zero, {ctx.el.in_label}")
         else:
             self._E(f"\tbeqz zero, {ctx.th.out_label}")
-        self.visitStmtLabeled(ctx.th)
-        if ctx.el is not None: self.visitStmtLabeled(ctx.el)
+        self._E(f"{ctx.th.in_label}:")
+        ctx.th.accept(self)
+        self._E(f"\tbeqz zero, {ctx.th.out_label}")
+        if ctx.el is not None:
+            self._E(f"{ctx.el.in_label}:")
+            ctx.el.accept(self)
+            self._E(f"\tbeqz zero, {ctx.el.out_label}")
         self._E(f"{ctx.th.out_label}:")
-
-    def visitStmtLabeled(self, ctx:MiniDecafParser.StmtLabeledContext):
-        self._E(f"{ctx.in_label}:")
-        self.visitChildren(ctx)
-        self._E(f"\tbeqz zero, {ctx.out_label}")
 
     def visitBlock(self, ctx:MiniDecafParser.BlockContext):
         self.enter_scope()
@@ -511,6 +512,46 @@ f"""# if-jump
     def visitExprStmt(self, ctx:MiniDecafParser.ExprStmtContext):
         self.visitChildren(ctx)
         self._E(self.pop(1))
+
+    def visitWhile(self, ctx:MiniDecafParser.WhileContext):
+        self._E(f"# [While]")
+        in_label = self.createLabel()
+        out_label = self.createLabel()
+        rule = unaryIntRule
+        self._E(
+f"""# while-jump
+{in_label}:""")
+        self.visitExpr(ctx.expr())
+        rule(self.etyp[ctx.expr()])
+        self._E(
+f"""{self.pop("t1")}
+\tbeqz t1, {out_label}""")
+        ctx.stmt().accept(self)
+        self._E(
+f"""beqz zero, {in_label}
+{out_label}:""")
+
+    def visitPrint(self, ctx:MiniDecafParser.PrintContext):
+        self._E(f"# [Print]")
+        args = [None, None] + ctx.exprList().expr()
+        for i, arg in enumerate(args):
+            if i == 0:
+                self._E(f"li a0, {int(ctx.noeol is not None)}")
+                continue
+            if i == 1:
+                self._E(f"li a1, {len(args) - 2}")
+                continue
+            arg.accept(self)
+            if i < NREGARGS:
+                self._E(
+f"""# param {i}
+\tld a{i}, 0(sp)
+\taddi sp, sp, 8""")
+
+        self._E(
+f"""\tcall __print
+addi sp, sp, {8 * max(0, len(args) - NREGARGS)}""")
+        self.etyp[ctx] = intTy
 
     def visitIntTy(self, ctx:MiniDecafParser.IntTyContext):
         return intTy

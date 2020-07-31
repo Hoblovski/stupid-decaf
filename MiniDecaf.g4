@@ -59,7 +59,9 @@ stmt
     | decl # DeclStmt
     | expr ';' # ExprStmt
     | 'return' expr ';' # Ret
-    | 'if' '(' expr ')' th=stmtLabeled ('else' el=stmtLabeled)? # If
+    | 'if' '(' expr ')' th=stmt ('else' el=stmt)? # If
+    | 'while' '(' expr ')' stmt # While
+    | 'print' exprList noeol=','? ';' # Print
     | '{' stmt* '}' # block
     ;
 
