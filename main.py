@@ -40,18 +40,39 @@ class AsmEmitter:
 #                           | ra                       |
 #                           + ------------------------ +
 
-def exists(p, it):
-    return any(map(p, it))
+class Typ:
+    def __init__(self, base="int", ptrLvs=0, arrDims=[]):
+        self.base = base
+        self.ptrLvs = ptrLvs
+        self.arrDims = arrDims
 
-intTy = ("int", 0)
-wrapPtr = lambda x: (x[0], x[1]+1)
-unwrapPtr = lambda x: (x[0], x[1]-1)
+    def __eq__(self, oth):
+        if self.base != oth.base: return False
+        if self.ptrLvs != oth.ptrLvs: return False
+        if self.arrDims != oth.arrDims: return False
+        return True
 
-def sizeof(ty):
-    return 8
+    def wrapPtr(self):
+        oth = deepcopy(self)
+        oth.ptrLvs += 1
+        return oth
 
-def tyRepr(t):
-    return t[0] + "*"*t[1]
+    def unwrapPtr(self):
+        oth = deepcopy(self)
+        assert oth.ptrLvs > 0
+        oth.ptrLvs -= 1
+        return oth
+
+    def sizeof(self):
+        return 8
+
+    def isPtr(self):
+        return self.ptrLvs > 0
+
+    def __str__(self):
+        return self.base + "*"*self.ptrLvs + ''.join(map(lambda d: f"[{d}]", self.arrDims))
+
+intTy = Typ(base="int")
 
 def typeRule(rule):
     def f(*args):
@@ -64,23 +85,23 @@ def typeRule(rule):
 @typeRule
 def unaryIntRule(ty):
     if ty == intTy: return intTy
-    return f"unaryInt: expected int, given {tyRepr(ty)}"
+    return f"unaryInt: expected int, given {ty}"
 
 @typeRule
 def binaryIntRule(ty1, ty2):
     if ty1 == ty2 == intTy: return intTy
-    return f"binaryInt: expected <int, int>, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+    return f"binaryInt: expected <int, int>, given <{ty1}, {ty2}>"
 
 @typeRule
 def binaryPtrArithRule(ty1, ty2):
-    if ty1 == intTy and ty2[1] > 0: return ty2
-    if ty2 == intTy and ty1[1] > 0: return ty1
-    return f"unaryPtrArith: expected ptrArith, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+    if ty1 == intTy and ty2.isPtr(): return ty2
+    if ty2 == intTy and ty1.isPtr(): return ty1
+    return f"unaryPtrArith: expected ptrArith, given <{ty1}, {ty2}>"
 
 @typeRule
 def sameType(ty1, ty2):
     if ty1 == ty2: return intTy
-    return f"sameType: expected two identical types, given <{tyRepr(ty1)}, {tyRepr(ty2)}>"
+    return f"sameType: expected two identical types, given <{ty1}, {ty2}>"
 
 @typeRule
 def anyRuleCanApply(*rules):
@@ -96,8 +117,10 @@ def anyRuleCanApply(*rules):
 
 @typeRule
 def derefRule(ty):
-    if ty[1] > 0: return unwrapPtr(ty)
-    return "derefRule: ptr expected, but {tyRepr(ty)} given"
+    if ty.isPtr(): return ty.unwrapPtr()
+    return "derefRule: ptr expected, but {ty} given"
+
+
 
 class RISCVAsmGen(MiniDecafVisitor):
     def __init__(self, emitter):
@@ -225,7 +248,7 @@ f"""# {op}
 \tli t1, {self.varoffs[-1][var]}
 \tadd t1, t1, fp
 {self.push("t1")}""")
-            return wrapPtr(self.vartyp[-1][var])
+            return self.vartyp[-1][var].wrapPtr()
         except KeyError: pass
 
         return rule(self.exprtyp[lhs])
@@ -360,12 +383,12 @@ addi sp, sp, {8 * max(0, len(args) - NREGARGS)}
         self.exprtyp[ctx] = self.relational(text(ctx.relOp()), ctx.add(0), ctx.add(1))
 
     def visitAsgn(self, ctx:MiniDecafParser.AsgnContext):
+        self._E(f"# [Asgn]")
         self.visitChildren(ctx) # push addr(lhs); val(rhs)
         self.checkTypeCoercion(self.exprtyp[ctx.lhs()], self.exprtyp[ctx.expr()]);
-        self._E(f"""# [Asgn]
-{self.pop("t1")}
+        self._E(f"""{self.pop("t1")}
 {self.pop("t2")}
-sd t1, 0(t2)""")
+\tsd t1, 0(t2)""")
 
     def visitRet(self, ctx:MiniDecafParser.RetContext):
         self._E(f"# [Ret]")
@@ -423,11 +446,11 @@ f"""# if-jump
         self._E(self.pop(1))
 
     def visitIntTy(self, ctx:MiniDecafParser.IntTyContext):
-        return ('int', 0)
+        return intTy
 
     def visitPtrTy(self, ctx:MiniDecafParser.PtrTyContext):
-        basety, ptrlv = ctx.ty().accept(self)
-        return (basety, ptrlv+1)
+        ty = ctx.ty().accept(self)
+        return ty.wrapPtr()
 
     def visitDecl(self, ctx:MiniDecafParser.DeclContext):
         self._E("# [Decl]")
@@ -477,12 +500,14 @@ f"""# if-jump
         v = text(ctx)
         if v not in self.varoffs[-1]:
             raise Exception(f"variable {v} used before declaration")
-        self._E(self.push(self.varoffs[-1][v]))
-        self.exprtyp[cyx] = self.vartyp[-1][v]
+        self._E(f"""li t1, {self.varoffs[-1][v]}
+add t1, t1, fp
+{self.push("t1")}""")
+        self.exprtyp[ctx] = self.vartyp[-1][v]
 
     def visitDerefLhs(self, ctx:MiniDecafParser.DerefLhsContext):
         self.visitChildren(ctx)
-        self.exprtyp[ctx] = unwrapPtr(self.exprtyp[ctx.expr()])
+        self.exprtyp[ctx] = self.exprtyp[ctx.expr()].unwrapPtr()
 
 
 def main(argv):
